@@ -4,11 +4,12 @@
   "description": "The Chrome/Edge extension that enables editing a Power Automate flow definition as JSON. Forked to support the v3 New Designer.",
   "main": "dist/app.js",
   "scripts": {
-    "build": "cross-env NODE_ENV=production && npm run clean && webpack",
+    "build": "npm run clean && cross-env NODE_ENV=production webpack",
     "clean": "rimraf dist",
+    "pack": "cross-zip dist Power_Automate_Tools_New_Designer_Support_v1.3.0.zip",
     "pack_bak": "pwsh .\\scripts\\pack-extension.ps1",
     "publish": "npm run build && npm run pack",
-    "start": "cross-env NODE_ENV=development && webpack --watch --progress"
+    "start": "cross-env NODE_ENV=development webpack --watch --progress"
   },
   "author": "Kamil Rithaler",
   "license": "GNU GPL v3",

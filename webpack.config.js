@@ -2,9 +2,11 @@ const path = require('path');
 const CopyPlugin = require('copy-webpack-plugin');
 const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
 
+const isDev = process.env.NODE_ENV === 'development';
+
 module.exports = {
-    mode: process.env.NODE_ENV === 'development' ? 'development' : 'production',
-    devtool: 'cheap-source-map',
+    mode: isDev ? 'development' : 'production',
+    devtool: isDev ? 'cheap-source-map' : false,
     entry: {
         background: path.resolve(__dirname, "src", "background.ts"),
         app: path.resolve(__dirname, "src", "app.tsx"),
