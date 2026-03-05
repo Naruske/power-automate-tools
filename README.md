@@ -47,8 +47,12 @@ npm install
 # Build the extension for production
 npm run build
 
-# The output will be inside the /dist folder. 
-# You can load this folder directly as an "unpacked extension".
+# (Optional) Create a .zip file for distribution
+npm run pack
+
+# The compiled output will be inside the /dist folder. 
+# You can load this folder directly as an "unpacked extension", 
+# or use the generated .zip file.
 ```
 
 ## Change Log
