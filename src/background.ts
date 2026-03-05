@@ -22,9 +22,8 @@ chrome.action.onClicked.addListener((tab) => {
 
   chrome.tabs.create(
     {
-      url: `${chrome.runtime.getURL("app.html")}?envId=${
-        state.lastMatchedRequest.envId
-      }&flowId=${state.lastMatchedRequest.flowId}`,
+      url: `${chrome.runtime.getURL("app.html")}?envId=${state.lastMatchedRequest.envId
+        }&flowId=${state.lastMatchedRequest.flowId}`,
     },
     (appTab) => {
       state.appTabId = appTab.id;
@@ -36,12 +35,43 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (state.appTabId === tabId) {
     delete state.appTabId;
   }
+  // If the initiator tab (the flow edit page) is closed, reset state.
+  if (state.initiatorTabId === tabId) {
+    resetFlowState();
+  }
 });
 
+// Aggressively set flow state whenever a tab navigates to a flow page.
+// The new designer uses Service Workers (-1 tabId) for requests, so we
+// cannot reliably link network requests to the UI tab.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tab.url) {
+    const matched = extractFlowDataFromTabUrl(tab.url);
+    if (matched) {
+      state.lastMatchedRequest = matched;
+      state.initiatorTabId = tabId;
+      chrome.action.enable();
+    } else if (tabId === state.initiatorTabId) {
+      resetFlowState();
+    }
+  }
+});
+
+// The classic designer uses *.api.flow.microsoft.com.
+// The new designer (make.powerautomate.com) uses:
+//   - api.flow.microsoft.com (global, no subdomain) for environment metadata
+//   - *.api.flow.microsoft.com (regional) for classic flow operations
+//   - *.environment.api.powerplatform.com (primary new designer flow API)
 chrome.webRequest.onBeforeSendHeaders.addListener(
   listenFlowApiRequests,
   {
-    urls: ["https://*.api.flow.microsoft.com/*"],
+    urls: [
+      "https://api.flow.microsoft.com/*",
+      "https://*.api.flow.microsoft.com/*",
+      "https://*.api.powerautomate.com/*",
+      "https://api.powerautomate.com/*",
+      "https://*.environment.api.powerplatform.com/*",
+    ],
   },
   ["requestHeaders"]
 );
@@ -66,6 +96,12 @@ chrome.runtime.onMessage.addListener(
   }
 );
 
+function resetFlowState() {
+  state.lastMatchedRequest = null;
+  delete state.initiatorTabId;
+  chrome.action.disable();
+}
+
 function sendTokenChanged() {
   sendMessageToTab({
     type: "token-changed",
@@ -83,32 +119,50 @@ function refreshInitiator() {
 function listenFlowApiRequests(
   details: chrome.webRequest.WebRequestHeadersDetails
 ) {
-  if (state.appTabId !== details.tabId) {
-    state.lastMatchedRequest = extractFlowDataFromUrl(details);
+  // Only intercept requests directed to classic Flow hosts.
+  // The new designers use powerplatform.com domains internally, but those
+  // tokens have an incompatible audience for the providers/Microsoft.ProcessSimple/ API.
+  // Fortunately, the new designer still makes environment queries to api.flow.microsoft.com,
+  // which yields the correct token for our purposes!
+  const requestHostname = new URL(details.url).hostname;
+  const isClassicHost =
+    requestHostname.includes("api.flow.microsoft.com") ||
+    requestHostname.includes("api.powerautomate.com");
 
-    const token = details.requestHeaders?.find(
-      (x) => x.name.toLowerCase() === "authorization"
-    )?.value;
+  if (!isClassicHost) {
+    return;
+  }
 
-    if (state.token !== token) {
-      state.token = token;
+  // We no longer rely on details.tabId to extract the flow data,
+  // because service worker requests have tabId === -1. Instead, we
+  // rely on chrome.tabs.onUpdated mapping the active tab URL.
 
-      const decodedToken = jwtDecode(token!);
+  const token = details.requestHeaders?.find(
+    (x) => x.name.toLowerCase() === "authorization"
+  )?.value;
 
+  let apiUrlChanged = false;
+  let tokenChanged = false;
+
+  const newApiUrl = `https://${requestHostname}/`;
+  if (state.apiUrl !== newApiUrl) {
+    state.apiUrl = newApiUrl;
+    apiUrlChanged = true;
+  }
+
+  if (token && state.token !== token) {
+    state.token = token;
+    tokenChanged = true;
+    try {
+      const decodedToken = jwtDecode(token);
       state.tokenExpires = new Date((decodedToken as any).exp * 1000);
-
-      const url = new URL(details.url);
-      state.apiUrl = `${url.protocol}//${url.hostname}/`;
-
-      sendTokenChanged();
+    } catch {
+      // ignore token decode failure
     }
+  }
 
-    if (state.lastMatchedRequest) {
-      state.initiatorTabId = details.tabId;
-      chrome.action.enable();
-    } else {
-      tryExtractFlowDataFromTabUrl(details.tabId);
-    }
+  if ((tokenChanged || apiUrlChanged) && state.token && state.apiUrl) {
+    sendTokenChanged();
   }
 }
 
@@ -134,23 +188,36 @@ function extractFlowDataFromTabUrl(url?: string) {
     return null;
   }
 
-  const envPattern = /environments\/([a-zA-Z0-9\-]*)\//i;
-  const envResult = envPattern.exec(url);
+  // The new designer uses hash routing, e.g.:
+  // https://make.powerautomate.com/environments/{envId}/flows/{flowId}?v3=true
+  // The classic designer uses a similar pathname pattern on flow.microsoft.com.
+  // Normalise by combining pathname + hash so we cover both cases.
+  let searchTarget = url;
+  try {
+    const parsed = new URL(url);
+    // If the router puts env/flow info into the hash (e.g. #!/environments/…)
+    searchTarget = parsed.pathname + parsed.hash + parsed.search;
+  } catch {
+    // fall through with the raw url
+  }
+
+  const envPattern = /environments\/([a-zA-Z0-9\-_%]+)(?:\/|$)/i;
+  const envResult = envPattern.exec(searchTarget);
 
   if (!envResult) {
     return null;
   }
 
   const flowPattern =
-    /flows\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){1}/i;
-  const flowResult = flowPattern.exec(url);
+    /flows\/(?:shared\/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  const flowResult = flowPattern.exec(searchTarget);
 
   if (!flowResult) {
     return null;
   }
 
   return {
-    envId: envResult[1],
+    envId: decodeURIComponent(envResult[1]),
     flowId: flowResult[1],
   };
 }
@@ -162,15 +229,18 @@ function extractFlowDataFromUrl(
   if (!requestUrl) {
     return null;
   }
-  const pattern =
-    /\/providers\/Microsoft\.ProcessSimple\/environments\/(.*)\/flows\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}){1}/i;
 
-  const result = pattern.exec(requestUrl);
-  if (result) {
+  // Legacy classic extraction logic just in case the legacy path appears
+  const classicPattern =
+    /\/providers\/Microsoft\.ProcessSimple\/environments\/(.*)\/flows\/(?:shared\/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+  const classicResult = classicPattern.exec(requestUrl);
+  if (classicResult) {
     return {
-      envId: result[1],
-      flowId: result[2],
+      envId: classicResult[1],
+      flowId: classicResult[2],
     };
   }
+
   return null;
 }
