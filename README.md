@@ -6,6 +6,8 @@
 
 This is a **fork** of the excellent [Power Automate Tools extension by Kamil Rithaler](https://github.com/kamilrithaler/PowerAutomateTools), updated specifically restore compatibility with the **v3 New Designer** (`make.powerautomate.com`). 
 
+> **Note:** The updates in this fork, including compatibility fixes for the New Designer and the restoration of key functionalities, were actively developed and implemented using AI coding tools.
+
 The Chrome/Edge extension enables editing a Power Automate flow definition as JSON directly from your browser.
 
 ## Motivation
